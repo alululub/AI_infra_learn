@@ -1,21 +1,19 @@
 #include <cstdio>
 #include <iostream>
 #include <vector>
-
-// ============================================================
-// Kernel function to add the elements of two arrays
-// naive implementation
-// ============================================================
+#include <cuda_runtime.h>
 
 
 __global__ void add(float *a, float *b, float *c) {
     int index = threadIdx.x;
-    c[index] = a[index] + b[index];
+    __shared__ float temp[1024]; // Shared memory for intermediate results
+    temp[index] = a[index] + b[index]; // Perform addition in shared memory
+    __syncthreads(); // Synchronize threads to ensure all additions are complete
+    c[index] = temp[index]; // Write the result back to global memory
 }
 
-
-int main() 
-{   
+int main()
+{
     std::vector<float> a(1024);
     std::vector<float> b(1024);
     std::vector<float> c(1024);
@@ -51,7 +49,7 @@ int main()
     cudaFree(d_b);
     cudaFree(d_c);
 
-    //time taken for addition about 0.07ms
+    //time taken for addition about 0.08ms
     std::cout << "Time taken for addition: " << milliseconds << " ms" << std::endl;
 
 
