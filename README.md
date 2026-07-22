@@ -8,7 +8,7 @@ AI Infra Learning Journal
 | Day | Date | Topic | Learning Summary |
 | --- | --- | --- | --- |
 | 1 | 2026-07-21 | CUDA add 实验总结 | 在这次实现的两个版本中，naive 版本的耗时为 0.095 ms，shared-memory 版本为 0.204 ms。结果表明，在当前这个简单的 1 block / 1024 threads 向量加法场景下，shared memory 并没有带来性能提升，反而因为额外的同步和数据搬运开销使运行时间更长。这也说明：不是所有场景都适合使用 shared memory，真正的性能收益取决于问题规模和访存模式。 |
-| 2 |  |  |  |
+| 2 | 2026-07-22 | CUDA Matrix_add 实验总结 | 该功能过于简单，但是需要掌握其中最重要的寻址公式index = threadIdx.x + blockIdx.x * blockDim.x；其次由于这个属于归于简单操作，采用SMEM没法提升效率，反而会降低效率（个人理解是由于：简单的归约，a、b矩阵的每个数据只需要读取一次；采用SEME后反而多出了一次从SMEM读出的时间。不像GEMM每个数据都需要读取多次，所以SMEM的性价比很高。所以Matrix_add采用SMEM得不偿失）；此处还可以采用覆盖的形式，这样可以减少对VRAM的占用（但是在这个程序中GMEM充足，没有意义；在大模型算法中，如果后续这个参数还需要使用，但是又将其覆盖也是得不偿失的一种策略） |
 | 3 |  |  |  |
 | 4 |  |  |  |
 | 5 |  |  |  |
