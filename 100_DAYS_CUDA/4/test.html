@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CUDA Matrix Transpose Index Mapping Visualizer</title>
+    <style>
+        :root {
+            --bg-color: #0f172a;
+            --card-bg: #1e293b;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --primary: #38bdf8;
+            --secondary: #f43f5e;
+            --accent: #10b981;
+            --border: #334155;
+        }
+
+        body {
+            margin: 0;
+            padding: 20px;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+        }
+
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: var(--card-bg);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 24px;
+            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+        }
+
+        h2 {
+            margin-top: 0;
+            color: var(--primary);
+            font-size: 1.4rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+            gap: 16px;
+            background: rgba(15, 23, 42, 0.6);
+            padding: 16px;
+            border-radius: 12px;
+            margin-bottom: 24px;
+            border: 1px solid var(--border);
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            color: var(--text-muted);
+            font-weight: 600;
+        }
+
+        .val-display {
+            color: var(--primary);
+            font-weight: bold;
+            font-family: monospace;
+        }
+
+        input[type="range"] {
+            accent-color: var(--primary);
+            cursor: pointer;
+        }
+
+        .grid-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+
+        @media (max-width: 768px) {
+            .grid-container {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .matrix-card {
+            background: #090d16;
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 16px;
+            text-align: center;
+        }
+
+        .matrix-title {
+            font-size: 1rem;
+            font-weight: bold;
+            margin-bottom: 12px;
+        }
+
+        .matrix-title.in { color: var(--primary); }
+        .matrix-title.out { color: var(--secondary); }
+
+        canvas {
+            background: #020617;
+            border-radius: 8px;
+            width: 100%;
+            height: auto;
+            max-width: 400px;
+            border: 1px solid var(--border);
+        }
+
+        .formula-box {
+            background: rgba(56, 189, 248, 0.05);
+            border-left: 4px solid var(--primary);
+            padding: 16px;
+            border-radius: 0 8px 8px 0;
+            font-family: 'Courier New', Courier, monospace;
+            font-size: 0.9rem;
+            line-height: 1.6;
+        }
+
+        .highlight {
+            color: var(--accent);
+            font-weight: bold;
+        }
+
+        .highlight-secondary {
+            color: var(--secondary);
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h2>🧩 CUDA 转置坐标映射演示器 (`x = blockIdx.y * 32 + threadIdx.x`)</h2>
+
+    <div class="controls">
+        <div class="control-group">
+            <label>blockIdx.x (输入网格列号): <span id="lbl-bx" class="val-display">1</span></label>
+            <input type="range" id="slider-bx" min="0" max="3" value="1">
+        </div>
+        <div class="control-group">
+            <label>blockIdx.y (输入网格行号): <span id="lbl-by" class="val-display">2</span></label>
+            <input type="range" id="slider-by" min="0" max="3" value="2">
+        </div>
+        <div class="control-group">
+            <label>threadIdx.x (块内线程 X): <span id="lbl-tx" class="val-display">8</span></label>
+            <input type="range" id="slider-tx" min="0" max="31" value="8">
+        </div>
+        <div class="control-group">
+            <label>threadIdx.y (块内线程 Y): <span id="lbl-ty" class="val-display">4</span></label>
+            <input type="range" id="slider-ty" min="0" max="31" value="4">
+        </div>
+    </div>
+
+    <div class="grid-container">
+        <div class="matrix-card">
+            <div class="matrix-title in">1. 读取阶段：输入矩阵 A (128x128)</div>
+            <canvas id="cvs-in" width="300" height="300"></canvas>
+        </div>
+        <div class="matrix-card">
+            <div class="matrix-title out">2. 写入阶段：输出矩阵 B (128x128)</div>
+            <canvas id="cvs-out" width="300" height="300"></canvas>
+        </div>
+    </div>
+
+    <div class="formula-box" id="explanation">
+        <!-- 动态渲染计算公式 -->
+    </div>
+</div>
+
+<script>
+    const sliderBx = document.getElementById('slider-bx');
+    const sliderBy = document.getElementById('slider-by');
+    const sliderTx = document.getElementById('slider-tx');
+    const sliderTy = document.getElementById('slider-ty');
+
+    const cvsIn = document.getElementById('cvs-in');
+    const cvsOut = document.getElementById('cvs-out');
+    const ctxIn = cvsIn.getContext('2d');
+    const ctxOut = cvsOut.getContext('2d');
+
+    const expBox = document.getElementById('explanation');
+
+    function update() {
+        const bx = parseInt(sliderBx.value);
+        const by = parseInt(sliderBy.value);
+        const tx = parseInt(sliderTx.value);
+        const ty = parseInt(sliderTy.value);
+
+        document.getElementById('lbl-bx').innerText = bx;
+        document.getElementById('lbl-by').innerText = by;
+        document.getElementById('lbl-tx').innerText = tx;
+        document.getElementById('lbl-ty').innerText = ty;
+
+        // 阶段 1：读取坐标
+        const inX = bx * 32 + tx;
+        const inY = by * 32 + ty;
+
+        // 阶段 2：写入坐标 (问题核心)
+        const outX = by * 32 + tx;
+        const outY = bx * 32 + ty;
+
+        drawMatrix(ctxIn, bx, by, tx, ty, inX, inY, '#38bdf8', 'A');
+        drawMatrix(ctxOut, by, bx, tx, ty, outX, outY, '#f43f5e', 'B');
+
+        expBox.innerHTML = `
+            <b>【阶段 1：读取 A 矩阵】</b><br>
+            • 选中 Block 坐标: Block(<span class="highlight">${bx}</span>, ${by})<br>
+            • 线程读取绝对物理坐标: X = ${bx} × 32 + ${tx} = <b>${inX}</b>, Y = ${by} × 32 + ${ty} = <b>${inY}</b><br><br>
+            <b>【阶段 2：合并写入 B 矩阵 (你的疑问点)】</b><br>
+            • 因为转置，A 矩阵中的 Tile(<span class="highlight">${bx}</span>, ${by}) 必须存到 B 矩阵中的 Tile(${by}, <span class="highlight">${bx}</span>)<br>
+            • 所以 B 矩阵的 Block 列坐标由 <span class="highlight">blockIdx.y (${by})</span> 提供，行坐标由 <span class="highlight">blockIdx.x (${bx})</span> 提供！<br>
+            • B 矩阵写入绝对物理坐标: <br>
+              &nbsp;&nbsp;<b>x = blockIdx.y * 32 + threadIdx.x</b> = ${by} × 32 + ${tx} = <span class="highlight-secondary">${outX}</span> (列坐标)<br>
+              &nbsp;&nbsp;<b>y = blockIdx.x * 32 + threadIdx.y</b> = ${bx} × 32 + ${ty} = <span class="highlight-secondary">${outY}</span> (行坐标)<br>
+            • <span class="highlight">关键点：</span> 注意看 <b>threadIdx.x (${tx})</b> 依然加在最右边的 <b>x (列)</b> 上！这保证了同一个 Warp（32个线程）写入 B 矩阵时，写的是<b>同一行连续的列地址</b> $\\rightarrow$ <span class="highlight">100% 合并写入！</span>
+        `;
+    }
+
+    function drawMatrix(ctx, activeBlockX, activeBlockY, tx, ty, elemX, elemY, color, name) {
+        ctx.clearRect(0, 0, 300, 300);
+        const gridSize = 4; // 4x4 Blocks
+        const blockSize = 300 / gridSize;
+
+        // 画 Block 网格
+        for (let i = 0; i < gridSize; i++) {
+            for (let j = 0; j < gridSize; j++) {
+                ctx.strokeStyle = '#334155';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(i * blockSize, j * blockSize, blockSize, blockSize);
+
+                // 标 Block 坐标
+                ctx.fillStyle = '#475569';
+                ctx.font = '10px monospace';
+                ctx.fillText(`B(${i},${j})`, i * blockSize + 4, j * blockSize + 12);
+            }
+        }
+
+        // 高亮当前选中的 Block
+        ctx.fillStyle = color + '22';
+        ctx.fillRect(activeBlockX * blockSize, activeBlockY * blockSize, blockSize, blockSize);
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(activeBlockX * blockSize, activeBlockY * blockSize, blockSize, blockSize);
+
+        // 画具体 Element 点
+        const px = (elemX / 128) * 300;
+        const py = (elemY / 128) * 300;
+
+        ctx.fillStyle = '#10b981';
+        ctx.beginPath();
+        ctx.arc(px, py, 4, 0, Math.PI * 2);
+        ctx.fill();
+
+        // 连线标注
+        ctx.strokeStyle = '#10b981';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(activeBlockX * blockSize, py);
+        ctx.lineTo(px, py);
+        ctx.lineTo(px, activeBlockY * blockSize);
+        ctx.stroke();
+    }
+
+    sliderBx.addEventListener('input', update);
+    sliderBy.addEventListener('input', update);
+    sliderTx.addEventListener('input', update);
+    sliderTy.addEventListener('input', update);
+
+    update();
+</script>
+</body>
+</html>
