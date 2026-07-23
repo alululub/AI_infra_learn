@@ -53,5 +53,8 @@ int main()
         }
         std::cout << std::endl;
     }
+    cudaFree(d_input);
+    cudaFree(d_output);
+
     return 0;
 }
