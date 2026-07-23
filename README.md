@@ -12,7 +12,7 @@ AI Infra Learning Journal
 | 3 | 2026-07-23 | CUDA Matrix_Transpose 实验总结 | 该功能实现了基本矩阵的转置，通过设定一个7x3的矩阵，通过cuda实现了矩阵的转置输出。注意需要详细记住寻址公式。由于初始化设置block为dim3<16,16>为一个二维的block，所以其中threadIdx.x + blockIdx.x \* blockDim.x为行，threadIdx.y + blockIdx.y \* blockDim.y为列。所以其中转置公式为output[x \* height + y] = input[y \* width + x]。但是我们一定要注意不要让数据超出范围，否则可能会有未初始化的数据进入矩阵/污染其他模块的数据，从而导致整个程序计算错误。|
 | 4 | 2026-07-24 | Matrix_Transpose bank conflict | 该功能实现了矩阵的转置，从数据读取的角度来看：naive版本一次读取一次写入；SMEM反而两次读写（SMEM，GMEM）。但是由于naive版本在写入的时候由于x,y地址指向出现了非合并内存访问，导致速度严重下降；反之SMEM的读写速度非常快。在本程序当中，我们将SMEM当作一个零时中转站，但是反映很快，尽管多了一段“路程”，但是由于写入数据变成合并内存访问，反而速度大大提升。TIPS：学会区分SGMEE和本程序的本质区别：1、SGMEE是通过减少读取GMEM的次数来加快速度；本程序是通过合并内存访问来加快速度。    2、[32][33]的SMEM是为了避免在读取SMEM的时候出现bank_conflict，这一点非常重要！！！ |
 | 5 | 2026-07-25 | addfloat4 优化 | 通过float4的操作，主要降低：1、指令发射开销   2、榨干内存总线粒度，GPU 读写全局内存（Global Memory）时，底层硬件是按 内存事务（Memory Transaction） 工作的。最完美的单次 Transaction 粒度通常是 128 字节（正好对应 1 个 Warp 的 32 个线程，每个线程处理 16 字节，即 $32 \times 4\text{ bytes} \times 4 = 128\text{ bytes}$）。 但是float4 一个 Warp 32 个线程一次直接拉取 512 字节 的数据！单次指令请求直接打包了 4 个标准的 128-byte Transaction。这样直接降低了warp Scheduler的指令次数压力|
-| 6 |  |  |  |
+| 6 | 2026-07-26 | Grid_Stride_Loop | Grid-Stride Loop 让代码彻底脱离了对数据规模 N 的依赖，用最少的硬件调度开销和自适应的 Grid 大小，高效地吃满 GPU 吞吐量。 原理则是，让一个线程通过stride能够处理多个数据，避免可能出现数据数量大于线程数量，从而导致存在数据没有线程处理的情况|
 | 7 |  |  |  |
 | 8 |  |  |  |
 | 9 |  |  |  |
