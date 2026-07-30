@@ -1,9 +1,8 @@
+#include <chrono>   // C++ 高精度计时
+#include <cmath>    // 数学函数 (expf, INFINITY)
+#include <cstdlib>  // C 标准库 (malloc, free)
 #include <iostream>
-#include <chrono>
-#include <cmath>
-#include <cstdlib>
 #include <algorithm>
-#include <cuda_runtime.h>
 #include <cuda_runtime.h>
 
 
@@ -42,73 +41,82 @@ void softmax_cpu(const float* input, float* output, int batch_size, int num_clas
 
 __device__ float ReduceMax(float val)
 {
-    // 使用 warp 级别的归约操作来计算最大值
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        float other = __shfl_down_sync(0xffffffff, val, offset);
-        val = fmaxf(val, other);
+    for (int stride = warpSize/2; stride > 0; stride/=2)
+    {
+        val = fmaxf(val, __shfl_down_sync(0xffffffff, val, stride));
     }
     return val;
 }
 
 __device__ float ReduceSum(float val)
 {
-    // 使用 warp 级别的归约操作来计算和
-    for (int offset = warpSize / 2; offset > 0; offset /= 2) {
-        float other = __shfl_down_sync(0xffffffff, val, offset);
-        val = val + other;
+    for (int stride = warpSize/2; stride > 0; stride/=2)
+    {
+        val += __shfl_down_sync(0xffffffff, val, stride);
     }
     return val;
 }
 
-__global__ void softmax_kernel(const float* input, float* output, int N, int C) 
+__global__ void softmax_online(const float *input, float *output, int N, int C)
 {
-    int idx = blockIdx.x;//一个 block 处理一个样本
-    int tid = threadIdx.x;//线程在block中的索引
-    const float* x = input + idx * C;//x指向每行的地址
-    int Warpid = threadIdx.x / 32;
-    int Threadid_warp = threadIdx.x % 32;
-    extern __shared__ float max_val_block[];
+    int idx = blockIdx.x;
+    int tid = threadIdx.x;
+    int block_size = blockDim.x;
+    int warp_id   = tid / warpSize;      // 属于第几个 warp
+    int warp_lane = tid % warpSize;      // 在 warp 中排第几个
+    const float *x = input + idx * C;
 
-    float max_val_thread = -INFINITY;
-    float max = -INFINITY;
-    // 每个线程计算自己负责的部分的最大值
-    for (int i = tid; i < C; i+=blockDim.x)
+    // ---- 第一遍: 在线找最大值 ----
+    float max_thread = -INFINITY;
+    for (int i = tid; i < C; i += block_size)
     {
-        max_val_thread = fmaxf(max_val_thread,x[i]);
-    }
-
-    float max_val_warp = ReduceMax(max_val_thread);
-    if (Threadid_warp==0)
-    {
-        max_val_block[Warpid] = max_val_warp;
-    }
-    for (int i = 0; i < 32; ++i)
-    {
-        max = fmaxf(max,max_val_block[i]);
+        max_thread = fmaxf(max_thread, x[i]);
     }
 
-    //计算x-max
-    for (int i = tid; i < C; i+=blockDim.x)
+    float max_warp = ReduceMax(max_thread);
+    __shared__ float max_block[32];       // 最多支持 32 个 warp (1024 线程)
+    if (warp_lane == 0)
     {
-        output[blockIdx.x * C + i] = exp(x[i] - max);
+        max_block[warp_id] = max_warp;
     }
-    
-    //计算总和sum
-    x = output + idx * C;
-    float sumval = 0.0f;
-    for (int i = tid; i < C; i += blockDim.x) 
-    {
-        sumval += x[i];
-    }
-    sumval = ReduceSum(sumval);
-    float sum = __shfl_sync(0xFFFFFFFF, sumval, 0);
+    __syncthreads();  // 确保所有 warp 的 max 已写入共享内存
 
-    //归一化
-    for (int i = tid; i < C; i += blockDim.x) 
+    // 所有线程从共享内存读取并求全局最大值
+    float max_val = -INFINITY;
+    for (int i = 0; i < blockDim.x / warpSize; ++i)
     {
-        output[idx * C + i] = x[i] / sum;
+        max_val = fmaxf(max_val, max_block[i]);
     }
 
+    // ---- 第二遍: 在线计算 exp 和 sum ----
+    float sum_thread = 0.0f;
+    for (int i = tid; i < C; i += block_size)
+    {
+        sum_thread += expf(x[i] - max_val);
+    }
+
+    float sum_warp = ReduceSum(sum_thread);
+
+    // 跨 warp 归约: 将各 warp 的 sum 存入共享内存
+    __shared__ float sum_block[32];
+    if (warp_lane == 0)
+    {
+        sum_block[warp_id] = sum_warp;
+    }
+    __syncthreads();
+
+    // 所有线程计算全局 sum (只遍历有效 warp 数)
+    float sum = 0.0f;
+    for (int i = 0; i < blockDim.x / warpSize; ++i)
+    {
+        sum += sum_block[i];
+    }
+
+    // ---- 第三遍: 写入最终结果 ----
+    for (int i = tid; i < C; i += block_size)
+    {
+        output[idx * C + i] = expf(x[i] - max_val) / sum;
+    }
 }
 
 bool compare_results(const float *cpu, const float *gpu, int N, int C,
@@ -124,10 +132,10 @@ bool compare_results(const float *cpu, const float *gpu, int N, int C,
   return true;
 }
 
-
 int main()
 {
-    int N = 32;     // 32 行 (batch size = 32)
+
+int N = 32;     // 32 行 (batch size = 32)
     int C = 4096;   // 每行 4096 个元素 (类别数)
 
     size_t num_elements = N * C;
@@ -144,7 +152,7 @@ int main()
 
     // ========== CPU 计时 ==========
     auto start_cpu = std::chrono::high_resolution_clock::now();
-    softmax_cpu(out_cpu, inp, N, C);
+    softmax_cpu(inp, out_cpu, N, C);
     auto end_cpu = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> cpu_time = end_cpu - start_cpu;
 
@@ -161,7 +169,7 @@ int main()
     cudaEventRecord(start);
     int blockSize = 256;      // 每块 256 个线程
     int numBlocks = N;        // N 个块, 每个块处理一行
-    softmax_kernel<<<numBlocks, blockSize>>>(d_out, d_inp, N, C);
+    softmax_online<<<numBlocks, blockSize>>>(d_inp, d_out, N, C);
     cudaEventRecord(stop);
 
     cudaEventSynchronize(stop);  // 等 GPU 跑完
@@ -190,8 +198,6 @@ int main()
     free(inp);
     free(out_cpu);
     free(out_gpu);
-
+    
     return 0;
-
-
 }
