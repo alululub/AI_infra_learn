@@ -15,7 +15,7 @@ AI Infra Learning Journal
 | 6 | 2026-07-26 | Grid_Stride_Loop | Grid-Stride Loop 让代码彻底脱离了对数据规模 N 的依赖，用最少的硬件调度开销和自适应的 Grid 大小，高效地吃满 GPU 吞吐量。 原理则是，让一个线程通过stride能够处理多个数据，避免可能出现数据数量大于线程数量，从而导致存在数据没有线程处理的情况|
 | 7 | 2026-07-27 | conv2d_gpu | conv2d_gpu 第一次通过卷积conv的形式，让我体验到了GPU对矩阵卷积的高效性。在这个工程中，主要是由于卷积操作，需要在图像（初始矩阵）、SMEM周围填充一部分内容，避免在卷积过程中，最周围一部分数据卷积出届（可能会存在未初始化数据，导致周围一圈的卷积出错！！！在加入周围的padding后，SMEM和GMEM的对应关系也发生了变化，需要重新进行定位； 1、未加入padding，对应关系为：blockIdx * dim。 2、加入padding后，图像周围填充了一部分内容，所以block起始位置发生变化为：blockIdx * dim - RADIUS。） |
 | 8 | 2026-07-28 | softmax | softmax，本次实验在 GPU 上实现高性能 Softmax 算子时，采用了 1 Block 对应 1 行（Block-Row 映射） 的并行策略，通过网格跨步循环与合并访存（Coalesced Access）极大地提升了 DRAM 带宽利用率。针对整行的数值规约（求 Max 与 Sum），我们设计了两级混合树状规约架构：Warp 内规约：利用 __shfl_down_sync 原语直接在寄存器间传递数据，实现零片上内存延迟与零同步开销的高速规约；跨 Warp 规约：因 Shuffle 指令仅作用于单个 Warp（32线程），我们引入 Shared Memory（SMEM）暂存各 Warp 的局部结果，配合 __syncthreads() 屏障与 Warp 0 的二次规约及 __shfl_sync 广播，完美打通了 Block 级别的全局规约。同时，通过预先减去行最大值保证了数值稳定性（防 Overflow），并暂存指数中间值避免了重复计算 exp 的硬件开销。 |
-| 9 |  |  |  |
+| 9 | 2026-07-29 | softmax_online | 今天又重新写了一次softmax，其实主题内容和昨天的一样，但是重新写一次还是有新的感悟。感觉对__shfl_down_sync_又有了一部分新的理解。|
 | 10 |  |  |  |
 | 11 |  |  |  |
 | 12 |  |  |  |
