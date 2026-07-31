@@ -19,8 +19,8 @@
 
 __global__ void sgemm_naive(float *a, float *b, float *c, int M, int K, int N)
 {
-    int row = blockDim.x * blockIdx.x + threadIdx.x;
-    int col = blockDim.y * blockIdx.y + threadIdx.y;
+    int row = blockDim.y * blockIdx.y + threadIdx.y;
+    int col = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (row<M && col< N)
     {
