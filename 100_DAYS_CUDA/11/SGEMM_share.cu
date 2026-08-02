@@ -32,7 +32,7 @@ __global__ void sgemm_share_32X32(const float *A, float *B, float *C, int M, int
     //进入循环中，开始按照BLOCK_SIZE开始沿K方向进行增加
     for (int i = 0; i < stride; ++i)
     {
-        if(row < M && (i * BLOCK_SIZE + threadIdx.x) < K)
+        if(row < M && (i * BLOCK_SIZE + threadIdx.x) < K)//防止出界
         {
             SMEM_A[threadIdx.y][threadIdx.x] = A[row * K + i * BLOCK_SIZE + threadIdx.x];
         }
@@ -41,13 +41,9 @@ __global__ void sgemm_share_32X32(const float *A, float *B, float *C, int M, int
             SMEM_A[threadIdx.y][threadIdx.x] = 0.f;
         }
 
-        if(col < N && (i * BLOCK_SIZE + threadIdx.y) < K)
+        if(col < N && (i * BLOCK_SIZE + threadIdx.y) < K)//防止出界
         {
             SMEM_B[threadIdx.y][threadIdx.x] = B[(i * BLOCK_SIZE + threadIdx.y) * N + col];
-        }
-        else
-        {
-            SMEM_B[threadIdx.y][threadIdx.x] = 0.f;
         }
         __syncthreads();
         for (int k = 0; k < BLOCK_SIZE; ++k)
@@ -60,6 +56,7 @@ __global__ void sgemm_share_32X32(const float *A, float *B, float *C, int M, int
     {
         C[row * N + col] = sum;
     }
+        
 }
 
 void init_matrix(float *mat, int size) {
