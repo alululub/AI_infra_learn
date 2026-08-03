@@ -82,7 +82,8 @@ __global__ void sgemm_2d_tiling_kernel(
 
         // --- 2D Register ！！！！外积！！！！乘加计算 ---
         #pragma unroll
-        for (int k = 0; k < BK; ++k) {
+        for (int k = 0; k < BK; ++k) 
+        {
             #pragma unroll
             for (int i = 0; i < TM; ++i) {
                 reg_a[i] = As[ty * TM + i][k];
