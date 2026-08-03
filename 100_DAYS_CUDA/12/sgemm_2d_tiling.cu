@@ -1,99 +1,98 @@
+#include <cuda_runtime.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <cuda_runtime.h>
+#include <chrono>
 
 // ============================================================================
-// 1. 编译期超参数定义 (Tile 维度)
+// 超参数定义 (Heuristics Config)
 // ============================================================================
-// 每个 Thread Block 负责计算 C 矩阵中 128 x 128 的大分块
-#define BM 128
-#define BN 128
-#define BK 8
-
-// 每个 Thread 负责计算 C 矩阵中 8 x 8 的小分块（寄存器 Tile）
-#define TM 8
-#define TN 8
-
-// 检查线程配置逻辑：(128/8) * (128/8) = 16 x 16 = 256 线程/Block
-// 256 线程协同搬运 As (128x8=1024 元素) -> 每人搬 4 个
-// 256 线程协同搬运 Bs (8x128=1024 元素) -> 每人搬 4 个
+#define BM 128   // Block 沿 M 轴的 Tile 大小
+#define BN 128   // Block 沿 N 轴的 Tile 大小
+#define BK 8     // Block 沿 K 轴推进的步长
+#define TM 8     // Thread 负责计算的 M 轴子块大小
+#define TN 8     // Thread 负责计算的 N 轴子块大小
 
 // ============================================================================
-// 2. CUDA Kernel: 2D Block Tiling SGEMM
+// 核函数：SGEMM 2D Block Tiling
 // ============================================================================
-__global__ void sgemm_2d_block_tiling(
-    const float * __restrict__ A,
-    const float * __restrict__ B,
-    float * __restrict__ C,
+__global__ void sgemm_2d_tiling_kernel(
+    const float* __restrict__ A,
+    const float* __restrict__ B,
+    float* __restrict__ C,
     int M, int N, int K) 
 {
-    // --- 线程与 Block 的坐标推导 ---
-    const int bx = blockIdx.x;
-    const int by = blockIdx.y;
     const int tx = threadIdx.x; // 0 ~ 15
     const int ty = threadIdx.y; // 0 ~ 15
+    const int tid = ty * blockDim.x + tx; // 线性线程 ID: 0 ~ 255
 
-    const int c_row_start = by * BM;
-    const int c_col_start = bx * BN;
+    const int c_row_start = blockIdx.y * BM;
+    const int c_col_start = blockIdx.x * BN;
 
-    const int thread_row_in_block = ty * TM;
-    const int thread_col_in_block = tx * TN;
+    __shared__ float As[BM][BK]; // 128 x 8  = 1024 个 float
+    __shared__ float Bs[BK][BN]; // 8   x 128 = 1024 个 float
 
-    // --- 片上 Shared Memory 与 线程私有寄存器 (Registers) ---
-    __shared__ float As[BM][BK]; // 128 x 8
-    __shared__ float Bs[BK][BN]; // 8 x 128
+    float accum[TM][TN] = {0.0f};
+    float reg_a[TM];
+    float reg_b[TN];
 
-    float accum[TM][TN] = {0.0f}; // 累加器，存储在寄存器中
-    float reg_a[TM] = {0.0f};     // 缓存当前 K 步下的 A 向量
-    float reg_b[TN] = {0.0f};     // 缓存当前 K 步下的 B 向量
+    for (int ph = 0; ph < (K + BK - 1) / BK; ++ph) 
+    {
+        // --- 协同搬运 A 矩阵子块 (128 x 8 = 1024 元素，256 线程循环 4 次) ---
+        #pragma unroll
+        for (int load_idx = 0; load_idx < 4; ++load_idx)
+        {
+            int tid_cur = tid + load_idx * 256;
+            int a_row_cur = tid_cur / BK;
+            int a_col_cur = tid_cur % BK;
 
-    // --- 协同搬运逻辑：将 2D 线程映射到 1D 展平索引 ---
-    const int tid = ty * blockDim.x + tx; // 0 ~ 255
+            int a_row_global = c_row_start + a_row_cur;
+            int a_col_global = a_col_cur + BK * ph;
+            if (a_row_global<M && a_col_global<K) 
+            {
+                As[a_row_cur][a_col_cur] = A[a_row_global*K + a_col_global];
+            }
+            else
+            {
+                As[a_row_cur][a_col_cur] = 0.0f;
+            }
+            
 
-    const int a_tile_row = tid / BK; // 0 ~ 127
-    const int a_tile_col = tid % BK; // 0 ~ 7
+        }
+        
 
-    const int b_tile_row = tid / BN; // 0 ~ 7
-    const int b_tile_col = tid % BN; // 0 ~ 127
+        // --- 协同搬运 B 矩阵子块 (8 x 128 = 1024 元素，256 线程循环 4 次) ---
+        #pragma unroll
+        for (int load_idx = 0; load_idx < 4; ++load_idx) {
+            int tid_cur = tid + load_idx * 256; // 0 ~ 1023
+            int b_row_cur = tid_cur / BN;      // 0 ~ 7
+            int b_col_cur = tid_cur % BN;      // 0 ~ 127
 
-    // --- 主循环：沿着 K 维度分块推进 ---
-    for (int ph = 0; ph < (K + BK - 1) / BK; ++ph) {
+            int b_row_global = ph * BK + b_row_cur;
+            int b_col_global = c_col_start + b_col_cur;
 
-        // 1. 全局显存 -> Shared Memory 搬运 (A 矩阵)
-        int a_global_r = c_row_start + a_tile_row;
-        int a_global_c = ph * BK + a_tile_col;
-        if (a_global_r < M && a_global_c < K) {
-            As[a_tile_row][a_tile_col] = A[a_global_r * K + a_global_c];
-        } else {
-            As[a_tile_row][a_tile_col] = 0.0f;
+            if (b_row_global < K && b_col_global < N) {
+                Bs[b_row_cur][b_col_cur] = B[b_row_global * N + b_col_global];
+            } else {
+                Bs[b_row_cur][b_col_cur] = 0.0f;
+            }
         }
 
-        // 2. 全局显存 -> Shared Memory 搬运 (B 矩阵，满足合并访存)
-        int b_global_r = ph * BK + b_tile_row;
-        int b_global_c = c_col_start + b_tile_col;
-        if (b_global_r < K && b_global_c < N) {
-            Bs[b_tile_row][b_tile_col] = B[b_global_r * N + b_global_c];
-        } else {
-            Bs[b_tile_row][b_tile_col] = 0.0f;
-        }
+        __syncthreads();
 
-        __syncthreads(); // 等待 Shared Memory 写入完毕
-
-        // 3. 寄存器级分块计算
+        // --- 2D Register ！！！！外积！！！！乘加计算 ---
         #pragma unroll
         for (int k = 0; k < BK; ++k) {
-            // 从 Shared Memory 读取到 Register
             #pragma unroll
             for (int i = 0; i < TM; ++i) {
-                reg_a[i] = As[thread_row_in_block + i][k];
-            }
-            #pragma unroll
-            for (int j = 0; j < TN; ++j) {
-                reg_b[j] = Bs[k][thread_col_in_block + j];
+                reg_a[i] = As[ty * TM + i][k];
             }
 
-            // 在寄存器内点积外积累加 (FFMA)
+            #pragma unroll
+            for (int j = 0; j < TN; ++j) {
+                reg_b[j] = Bs[k][tx * TN + j];
+            }
+
             #pragma unroll
             for (int i = 0; i < TM; ++i) {
                 #pragma unroll
@@ -103,16 +102,17 @@ __global__ void sgemm_2d_block_tiling(
             }
         }
 
-        __syncthreads(); // 等待所有线程完成读取，防止写后读冲突
+        __syncthreads();
     }
 
-    // --- 4. 写回 Global Memory ---
+    // --- 写回 Global Memory ---
     #pragma unroll
     for (int i = 0; i < TM; ++i) {
         #pragma unroll
         for (int j = 0; j < TN; ++j) {
-            int global_r = c_row_start + thread_row_in_block + i;
-            int global_c = c_col_start + thread_col_in_block + j;
+            int global_r = c_row_start + ty * TM + i;
+            int global_c = c_col_start + tx * TN + j;
+
             if (global_r < M && global_c < N) {
                 C[global_r * N + global_c] = accum[i][j];
             }
@@ -121,7 +121,7 @@ __global__ void sgemm_2d_block_tiling(
 }
 
 // ============================================================================
-// 3. Host 端 CPU 黄金参考实现 (用于比对结果正确性)
+// CPU 端验证函数 (Ground Truth)
 // ============================================================================
 void cpu_sgemm(const float* A, const float* B, float* C, int M, int N, int K) {
     for (int i = 0; i < M; ++i) {
@@ -135,96 +135,89 @@ void cpu_sgemm(const float* A, const float* B, float* C, int M, int N, int K) {
     }
 }
 
-// 结果验证
-bool verify_result(const float* host_c, const float* device_c, int num_elements, float tol = 1e-3f) {
-    for (int i = 0; i < num_elements; ++i) {
-        if (std::abs(host_c[i] - device_c[i]) > tol) {
-            std::cout << "验证失败! 索引 " << i 
-                      << " CPU=" << host_c[i] 
-                      << " GPU=" << device_c[i] << std::endl;
-            return false;
-        }
-    }
-    return true;
-}
-
 // ============================================================================
-// 4. Main 主函数
+// Main 函数
 // ============================================================================
 int main() {
-    // 矩阵规模定义 (可任意按需修改)
-    const int M = 1024;
-    const int N = 1024;
-    const int K = 1024;
+    // 设一个适合快速验证的尺寸 (也可替换为 1024, 2048 等大矩阵)
+    const int M = 512;
+    const int N = 512;
+    const int K = 512;
 
-    std::cout << "正在初始化矩阵: M=" << M << ", N=" << N << ", K=" << K << std::endl;
+    std::cout << "Matrix Dimensions: M=" << M << ", N=" << N << ", K=" << K << std::endl;
 
     size_t bytes_A = M * K * sizeof(float);
     size_t bytes_B = K * N * sizeof(float);
     size_t bytes_C = M * N * sizeof(float);
 
-    // 1. Host 内存分配
+    // 1. Host 侧内存分配与初始化
     std::vector<float> h_A(M * K);
     std::vector<float> h_B(K * N);
-    std::vector<float> h_C_device(M * N);
-    std::vector<float> h_C_cpu(M * N);
+    std::vector<float> h_C(M * N, 0.0f);
+    std::vector<float> h_C_ref(M * N, 0.0f);
 
-    // 2. 随机初始化输入数据
     for (int i = 0; i < M * K; ++i) h_A[i] = static_cast<float>(rand()) / RAND_MAX;
     for (int i = 0; i < K * N; ++i) h_B[i] = static_cast<float>(rand()) / RAND_MAX;
 
-    // 3. Device 显存分配
+    // 2. Device 侧内存分配
     float *d_A, *d_B, *d_C;
     cudaMalloc(&d_A, bytes_A);
     cudaMalloc(&d_B, bytes_B);
     cudaMalloc(&d_C, bytes_C);
 
-    // 4. 拷贝数据到 GPU
     cudaMemcpy(d_A, h_A.data(), bytes_A, cudaMemcpyHostToDevice);
     cudaMemcpy(d_B, h_B.data(), bytes_B, cudaMemcpyHostToDevice);
 
-    // 5. 配置 Kernel 网格与线程块维度
-    dim3 blockDim(BN / TN, BM / TM); // (128/8, 128/8) = (16, 16) = 256 线程
-    dim3 gridDim((N + BN - 1) / BN, (M + BM - 1) / BM); // (8, 8)
+    // 3. Grid 与 Block 维度设置
+    dim3 blockDim(BN / TN, BM / TM); // (16, 16) -> 256 Threads
+    dim3 gridDim((N + BN - 1) / BN, (M + BM - 1) / BM);
 
-    // 6. 预热运行 (Warmup)
-    sgemm_2d_block_tiling<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
-    cudaDeviceSynchronize();
-
-    // 7. 性能测试 (使用 CUDA Event 测毫秒数)
+    // 4. Warmup + Performance Timing (CUDA Event)
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
 
+    // Warmup
+    sgemm_2d_tiling_kernel<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
+    cudaDeviceSynchronize();
+
+    // 正式计费执行
     cudaEventRecord(start);
-    const int iterations = 10;
-    for (int i = 0; i < iterations; ++i) {
-        sgemm_2d_block_tiling<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
-    }
+    sgemm_2d_tiling_kernel<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
 
-    float ms = 0.0f;
-    cudaEventElapsedTime(&ms, start, stop);
-    float avg_ms = ms / iterations;
+    float milliseconds = 0;
+    cudaEventElapsedTime(&milliseconds, start, stop);
 
-    // 计算 TFLOPS: 2 * M * N * K 次浮点运算
-    double flops = 2.0 * static_cast<double>(M) * N * K;
-    double tflops = (flops * 1e-12) / (avg_ms * 1e-3);
+    // 计算 TFLOPS: (2 * M * N * K) / (time_in_seconds * 1e12)
+    double flops = 2.0 * M * N * K;
+    double tflops = (flops / (milliseconds / 1000.0)) / 1e12;
 
-    std::cout << "GPU 平均耗时: " << avg_ms << " ms" << std::endl;
-    std::cout << "GPU 计算性能: " << tflops << " TFLOPS" << std::endl;
+    std::cout << "GPU Kernel Time: " << milliseconds << " ms" << std::endl;
+    std::cout << "Performance: " << tflops << " TFLOPS" << std::endl;
 
-    // 8. 结果正确性校验
-    std::cout << "正在运行 CPU 黄金参考进行比对校验..." << std::endl;
-    cudaMemcpy(h_C_device.data(), d_C, bytes_C, cudaMemcpyDeviceToHost);
-    cpu_sgemm(h_A.data(), h_B.data(), h_C_cpu.data(), M, N, K);
+    // 5. 数据拷贝回 Host 并校验正确性
+    cudaMemcpy(h_C.data(), d_C, bytes_C, cudaMemcpyDeviceToHost);
 
-    if (verify_result(h_C_cpu.data(), h_C_device.data(), M * N)) {
-        std::cout << ">> 校验通过！计算结果完全正确 (PASSED) <<" << std::endl;
+    std::cout << "Calculating CPU reference for verification..." << std::endl;
+    cpu_sgemm(h_A.data(), h_B.data(), h_C_ref.data(), M, N, K);
+
+    // 误差校验
+    double max_diff = 0.0;
+    for (int i = 0; i < M * N; ++i) {
+        double diff = std::abs(h_C[i] - h_C_ref[i]);
+        if (diff > max_diff) max_diff = diff;
     }
 
-    // 9. 释放资源
+    std::cout << "Max Absolute Difference: " << max_diff << std::endl;
+    if (max_diff < 1e-3) {
+        std::cout << "✅ Verification PASSED!" << std::endl;
+    } else {
+        std::cout << "❌ Verification FAILED!" << std::endl;
+    }
+
+    // 6. 释放显存与资源
     cudaFree(d_A);
     cudaFree(d_B);
     cudaFree(d_C);
