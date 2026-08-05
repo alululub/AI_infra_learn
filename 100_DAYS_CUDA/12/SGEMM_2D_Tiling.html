@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SGEMM 2D Tiling & Shared Memory Animation</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Fira+Code:wght@400;600&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #0f172a; /* slate-900 */
+            color: #f8fafc; /* slate-50 */
+            margin: 0;
+            overflow-x: hidden;
+        }
+        .code-font {
+            font-family: 'Fira Code', monospace;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+        .glass-panel {
+            background: rgba(30, 41, 59, 0.7); /* slate-800 with opacity */
+            backdrop-filter: blur(12px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+        }
+        
+        /* Custom Range Slider */
+        input[type=range] {
+            -webkit-appearance: none;
+            background: transparent;
+        }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            height: 16px;
+            width: 16px;
+            border-radius: 50%;
+            background: #38bdf8;
+            cursor: pointer;
+            margin-top: -6px;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.5);
+        }
+        input[type=range]::-webkit-slider-runnable-track {
+            width: 100%;
+            height: 4px;
+            cursor: pointer;
+            background: #475569;
+            border-radius: 2px;
+        }
+    </style>
+</head>
+<body class="flex flex-col h-screen">
+
+    <!-- 顶部状态栏 -->
+    <header class="flex-none p-6 pb-2">
+        <h1 class="text-3xl font-bold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400 flex items-center gap-3">
+            <svg class="w-8 h-8 text-blue-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"></path></svg>
+            SGEMM 2D Tiling & Shared Memory 微架构剖析
+        </h1>
+        <p class="text-slate-400 mt-2 text-sm max-w-3xl">
+            该动画演示了一个 Thread Block 处理 <span class="text-blue-300 font-mono">C</span> 矩阵中一个 Tile 的完整物理过程。
+            通过在 K 维度上推进，将 <span class="text-blue-300 font-mono">A</span> 和 <span class="text-emerald-300 font-mono">B</span> 矩阵的子块异步加载至极速的 Shared Memory (SRAM) 中，随后在寄存器内执行外积 (Outer Product) 累加。
+        </p>
+    </header>
+
+    <!-- 主要内容区：Canvas + 右侧说明 -->
+    <main class="flex-1 flex flex-col lg:flex-row overflow-hidden p-6 pt-4 gap-6">
+        
+        <!-- 左侧画布区 -->
+        <div class="flex-1 relative rounded-2xl overflow-hidden glass-panel border-slate-700 flex flex-col">
+            <div class="absolute top-4 left-4 z-10 flex gap-2">
+                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">Matrix A (VRAM)</span>
+                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">Matrix B (VRAM)</span>
+                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-purple-500/20 text-purple-300 border border-purple-500/30">Matrix C (VRAM)</span>
+                <span class="px-3 py-1 rounded-full text-xs font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">Shared Memory (SRAM)</span>
+            </div>
+            <!-- Canvas -->
+            <div class="flex-1 relative w-full h-full" id="canvas-container">
+                <canvas id="gpuCanvas"></canvas>
+            </div>
+            
+            <!-- 底部控制条 -->
+            <div class="h-16 border-t border-slate-700 bg-slate-800/50 flex items-center px-6 gap-4">
+                <button id="playPauseBtn" class="w-10 h-10 rounded-full bg-blue-500 hover:bg-blue-400 flex items-center justify-center text-white transition-colors shadow-[0_0_15px_rgba(59,130,246,0.5)]">
+                    <svg id="icon-pause" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M18 10a8 8 0 11-16 0 8 8 0 0116 0zM7 8a1 1 0 012 0v4a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v4a1 1 0 102 0V8a1 1 0 00-1-1z" clip-rule="evenodd"></path></svg>
+                    <svg id="icon-play" class="w-5 h-5 hidden" fill="currentColor" viewBox="0 0 20 20"><path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clip-rule="evenodd"></path></svg>
+                </button>
+                <div class="flex-1 flex items-center gap-3">
+                    <span class="text-xs text-slate-400 font-mono">0%</span>
+                    <input type="range" id="progressSlider" min="0" max="1000" value="0" class="w-full">
+                    <span class="text-xs text-slate-400 font-mono">100%</span>
+                </div>
+                <div class="flex items-center gap-2">
+                    <span class="text-xs text-slate-400">Speed</span>
+                    <select id="speedSelect" class="bg-slate-700 text-xs text-white rounded px-2 py-1 outline-none border border-slate-600 focus:border-blue-500">
+                        <option value="0.5">0.5x</option>
+                        <option value="1" selected>1.0x</option>
+                        <option value="2">2.0x</option>
+                    </select>
+                </div>
+            </div>
+        </div>
+
+        <!-- 右侧解说区 -->
+        <div class="w-full lg:w-96 flex-none flex flex-col gap-4">
+            
+            <div class="glass-panel p-6 rounded-2xl flex-1 flex flex-col">
+                <h3 class="text-lg font-bold text-white mb-4 border-b border-slate-700 pb-2">当前物理状态</h3>
+                
+                <div id="step-indicator" class="flex flex-col gap-4">
+                    <!-- 动态注入的状态说明 -->
+                </div>
+
+                <div class="mt-auto pt-6">
+                    <div class="bg-slate-900/80 p-4 rounded-xl border border-slate-700">
+                        <h4 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">架构师核心账本</h4>
+                        <ul class="text-sm space-y-2 text-slate-300 font-mono text-[11px]">
+                            <li class="flex justify-between"><span>Tile(BM, BN):</span> <span class="text-purple-400">4 × 4</span></li>
+                            <li class="flex justify-between"><span>Step(BK):</span> <span class="text-amber-400">4</span></li>
+                            <li class="flex justify-between"><span>SMEM Size:</span> <span class="text-amber-400">2 × 16 elem</span></li>
+                            <li class="flex justify-between"><span>VRAM Read:</span> <span class="text-blue-400">O(N^2)</span></li>
+                        </ul>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <script>
+        const canvas = document.getElementById('gpuCanvas');
+        const ctx = canvas.getContext('2d');
+        const container = document.getElementById('canvas-container');
+        
+        // UI Elements
+        const playPauseBtn = document.getElementById('playPauseBtn');
+        const iconPlay = document.getElementById('icon-play');
+        const iconPause = document.getElementById('icon-pause');
+        const progressSlider = document.getElementById('progressSlider');
+        const speedSelect = document.getElementById('speedSelect');
+        const stepIndicator = document.getElementById('step-indicator');
+
+        // Matrix Math Configuration (Abstracted for Visualization)
+        const M = 16, N = 16, K = 16;     // Total Matrix size
+        const BM = 4, BN = 4, BK = 4;     // Tile sizes
+        const TARGET_BLOCK_M = 1;         // We focus on Block(1, 2)
+        const TARGET_BLOCK_N = 2;
+        
+        // Animation Configuration
+        let isPlaying = true;
+        let animationTime = 0;
+        let animationSpeed = 1.0;
+        const TOTAL_DURATION = 16000; // 16 seconds per full loop (4 K-steps, 4s each)
+        
+        // Layout Variables
+        let cellSize = 0;
+        let layout = {};
+
+        // Resize handler
+        function resize() {
+            const rect = container.getBoundingClientRect();
+            // Handle high-DPI displays
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = rect.width * dpr;
+            canvas.height = rect.height * dpr;
+            ctx.scale(dpr, dpr);
+            
+            // Calculate dynamic layout to fit screen
+            const availableW = rect.width;
+            const availableH = rect.height;
+            
+            // We have 3 matrices of 16x16, plus 2 SMEM blocks of 4x4.
+            // Layout idea:
+            // Top Left: SMEM A & SMEM B
+            // Top Right: Matrix B (K x N)
+            // Bottom Left: Matrix A (M x K)
+            // Bottom Right: Matrix C (M x N)
+            
+            // Need space for: 16 cells + margin + 16 cells in X and Y
+            cellSize = Math.min((availableW - 120) / 32, (availableH - 150) / 32);
+            cellSize = Math.max(cellSize, 8); // minimum size
+            
+            const gap = 2;
+            const matW = 16 * (cellSize + gap);
+            
+            // Center everything
+            const startX = (availableW - matW * 2 - 40) / 2;
+            const startY = (availableH - matW * 2 - 40) / 2 + 30;
+
+            layout = {
+                A: { x: startX, y: startY + matW + 40 },
+                B: { x: startX + matW + 40, y: startY },
+                C: { x: startX + matW + 40, y: startY + matW + 40 },
+                SMEM_A: { x: startX, y: startY + 40 },
+                SMEM_B: { x: startX + (4 * (cellSize+gap)) + 40, y: startY + 40 }
+            };
+        }
+
+        window.addEventListener('resize', resize);
+
+        // Helper: Draw a single cell
+        function drawCell(x, y, size, color, fillOpacity = 0.1, glow = false) {
+            ctx.beginPath();
+            ctx.roundRect(x, y, size, size, 2);
+            ctx.fillStyle = color.replace(')', `, ${fillOpacity})`).replace('rgb', 'rgba');
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 1;
+            
+            if (glow) {
+                ctx.shadowColor = color;
+                ctx.shadowBlur = 10;
+            } else {
+                ctx.shadowBlur = 0;
+            }
+            
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Helper: Draw full matrix grid
+        function drawGrid(x, y, rows, cols, baseColor, name) {
+            const size = cellSize;
+            const gap = 2;
+            for (let r = 0; r < rows; r++) {
+                for (let c = 0; c < cols; c++) {
+                    drawCell(x + c * (size + gap), y + r * (size + gap), size, baseColor, 0.1);
+                }
+            }
+            
+            // Matrix Label
+            ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+            ctx.font = '12px Inter';
+            ctx.textAlign = 'left';
+            ctx.fillText(name, x, y - 10);
+        }
+
+        // Helper: Highlight a specific Tile
+        function drawTileHighlight(mx, my, startRow, startCol, rows, cols, color, opacity = 0.5) {
+            const size = cellSize;
+            const gap = 2;
+            const x = mx + startCol * (size + gap) - gap/2;
+            const y = my + startRow * (size + gap) - gap/2;
+            const w = cols * (size + gap);
+            const h = rows * (size + gap);
+
+            ctx.beginPath();
+            ctx.roundRect(x, y, w, h, 4);
+            ctx.fillStyle = color.replace(')', `, ${opacity})`).replace('rgb', 'rgba');
+            ctx.fill();
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 15;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+        }
+
+        // Helper: Draw particles/lines
+        function drawLine(x1, y1, x2, y2, color, progress) {
+            ctx.beginPath();
+            ctx.moveTo(x1, y1);
+            const curX = x1 + (x2 - x1) * progress;
+            const curY = y1 + (y2 - y1) * progress;
+            ctx.lineTo(curX, curY);
+            ctx.strokeStyle = color;
+            ctx.lineWidth = 2;
+            ctx.shadowColor = color;
+            ctx.shadowBlur = 8;
+            ctx.stroke();
+            ctx.shadowBlur = 0;
+            
+            // Head particle
+            ctx.beginPath();
+            ctx.arc(curX, curY, 3, 0, Math.PI * 2);
+            ctx.fillStyle = '#fff';
+            ctx.fill();
+        }
+
+        function updateUIState(stateIndex, k_step, k_inner) {
+            const states = [
+                {
+                    title: "阶段 1: 全局显存异步加载 (LDG.128)",
+                    desc: `当前 K_Step: <span class="text-amber-400 font-mono">${k_step}</span>/4<br>使用 <code class="text-blue-300 bg-blue-900/30 px-1 rounded">float4</code> 向量化指令，将 A 矩阵切块和 B 矩阵切块并行从 VRAM 拉取。`,
+                    color: "border-blue-500"
+                },
+                {
+                    title: "阶段 2: 飞往 Shared Memory",
+                    desc: `数据到达片上极速 SRAM，此时发出 <code class="text-purple-300 bg-purple-900/30 px-1 rounded">__syncthreads()</code> 屏障，强迫所有线程等数据就绪。`,
+                    color: "border-amber-500"
+                },
+                {
+                    title: "阶段 3: 寄存器外积累加 (Inner Loop)",
+                    desc: `正在计算内部第 <span class="text-pink-400 font-mono">${k_inner}</span> 个局部向量<br>从 SMEM A 读取列向量，SMEM B 读取行向量，下发给 Tensor Core 执行乘加。`,
+                    color: "border-pink-500"
+                },
+                {
+                    title: "阶段 4: C 矩阵结果更新",
+                    desc: `当前外积计算结果累加到线程私有寄存器中，并在 C 矩阵对应的输出块体现。`,
+                    color: "border-emerald-500"
+                }
+            ];
+
+            const current = states[stateIndex];
+            stepIndicator.innerHTML = `
+                <div class="border-l-4 ${current.color} pl-4 py-1 animate-pulse">
+                    <h5 class="text-sm font-bold text-white">${current.title}</h5>
+                    <p class="text-xs text-slate-400 mt-1 leading-relaxed">${current.desc}</p>
+                </div>
+            `;
+        }
+
+        // Main Animation Loop
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const time = animationTime % TOTAL_DURATION; // 0 to 16000
+            const stepDuration = TOTAL_DURATION / (K / BK); // 4000ms per k_step
+            const k_step = Math.floor(time / stepDuration); // 0, 1, 2, 3
+            
+            // Local time within the current K-step (0.0 to 1.0)
+            const localProgress = (time % stepDuration) / stepDuration;
+            
+            // Colors
+            const colA = 'rgb(59, 130, 246)';    // blue-500
+            const colB = 'rgb(16, 185, 129)';    // emerald-500
+            const colC = 'rgb(168, 85, 247)';    // purple-500
+            const colSMEM = 'rgb(245, 158, 11)'; // amber-500
+            const colActive = 'rgb(236, 72, 153)'; // pink-500
+
+            // 1. Draw Base Grids
+            drawGrid(layout.A.x, layout.A.y, M, K, colA, 'Matrix A (VRAM)');
+            drawGrid(layout.B.x, layout.B.y, K, N, colB, 'Matrix B (VRAM)');
+            drawGrid(layout.C.x, layout.C.y, M, N, colC, 'Matrix C (VRAM)');
+            
+            // Draw SMEM empty slots
+            drawGrid(layout.SMEM_A.x, layout.SMEM_A.y, BM, BK, colSMEM, 'SMEM A');
+            drawGrid(layout.SMEM_B.x, layout.SMEM_B.y, BK, BN, colSMEM, 'SMEM B');
+
+            // Permanently highlight target block in C
+            drawTileHighlight(layout.C.x, layout.C.y, TARGET_BLOCK_M * BM, TARGET_BLOCK_N * BN, BM, BN, colC, 0.2 + (k_step / (K/BK)) * 0.5);
+
+            // ==========================================
+            // Phase Logic Animation
+            // ==========================================
+            const A_startRow = TARGET_BLOCK_M * BM;
+            const A_startCol = k_step * BK;
+            const B_startRow = k_step * BK;
+            const B_startCol = TARGET_BLOCK_N * BN;
+
+            if (localProgress < 0.2) {
+                // Phase 1: Highlight Global Memory (Loading)
+                updateUIState(0, k_step, 0);
+                const pulse = 0.4 + 0.4 * Math.sin(localProgress * Math.PI * 10);
+                drawTileHighlight(layout.A.x, layout.A.y, A_startRow, A_startCol, BM, BK, colA, pulse);
+                drawTileHighlight(layout.B.x, layout.B.y, B_startRow, B_startCol, BK, BN, colB, pulse);
+                
+            } else if (localProgress < 0.4) {
+                // Phase 2: Flying to SMEM
+                updateUIState(1, k_step, 0);
+                const p = (localProgress - 0.2) / 0.2; // 0 to 1
+                
+                // Draw trailing highlight in VRAM
+                drawTileHighlight(layout.A.x, layout.A.y, A_startRow, A_startCol, BM, BK, colA, 0.2);
+                drawTileHighlight(layout.B.x, layout.B.y, B_startRow, B_startCol, BK, BN, colB, 0.2);
+
+                // Flying block A
+                const startX_A = layout.A.x + A_startCol * (cellSize + 2);
+                const startY_A = layout.A.y + A_startRow * (cellSize + 2);
+                const curX_A = startX_A + (layout.SMEM_A.x - startX_A) * p;
+                const curY_A = startY_A + (layout.SMEM_A.y - startY_A) * p;
+                drawTileHighlight(curX_A, curY_A, 0, 0, BM, BK, colSMEM, 0.6);
+
+                // Flying block B
+                const startX_B = layout.B.x + B_startCol * (cellSize + 2);
+                const startY_B = layout.B.y + B_startRow * (cellSize + 2);
+                const curX_B = startX_B + (layout.SMEM_B.x - startX_B) * p;
+                const curY_B = startY_B + (layout.SMEM_B.y - startY_B) * p;
+                drawTileHighlight(curX_B, curY_B, 0, 0, BK, BN, colSMEM, 0.6);
+
+            } else {
+                // Phase 3 & 4: Compute Outer Products
+                // SMEM is now full
+                drawTileHighlight(layout.SMEM_A.x, layout.SMEM_A.y, 0, 0, BM, BK, colSMEM, 0.4);
+                drawTileHighlight(layout.SMEM_B.x, layout.SMEM_B.y, 0, 0, BK, BN, colSMEM, 0.4);
+
+                // There are BK (4) inner steps.
+                const computeProgress = (localProgress - 0.4) / 0.6; // 0 to 1
+                const k_inner = Math.floor(computeProgress * BK); // 0, 1, 2, 3
+                const p_inner = (computeProgress * BK) % 1; // 0 to 1 within the inner step
+
+                if (k_inner < BK) {
+                    if (p_inner < 0.8) {
+                        updateUIState(2, k_step, k_inner);
+                        // Highlight Column in SMEM A
+                        drawTileHighlight(layout.SMEM_A.x, layout.SMEM_A.y, 0, k_inner, BM, 1, colActive, 0.8);
+                        // Highlight Row in SMEM B
+                        drawTileHighlight(layout.SMEM_B.x, layout.SMEM_B.y, k_inner, 0, 1, BN, colActive, 0.8);
+
+                        // Lines flying to C
+                        const cX = layout.C.x + (TARGET_BLOCK_N * BN) * (cellSize + 2);
+                        const cY = layout.C.y + (TARGET_BLOCK_M * BM) * (cellSize + 2);
+                        const aX = layout.SMEM_A.x + k_inner * (cellSize + 2) + cellSize/2;
+                        const aY = layout.SMEM_A.y + (BM/2) * (cellSize + 2);
+                        const bX = layout.SMEM_B.x + (BN/2) * (cellSize + 2);
+                        const bY = layout.SMEM_B.y + k_inner * (cellSize + 2) + cellSize/2;
+
+                        drawLine(aX, aY, cX, cY + (BM/2)*(cellSize+2), colActive, p_inner / 0.8);
+                        drawLine(bX, bY, cX + (BN/2)*(cellSize+2), cY, colActive, p_inner / 0.8);
+                    } else {
+                        updateUIState(3, k_step, k_inner);
+                        // Flash C block to indicate accumulation
+                        drawTileHighlight(layout.C.x, layout.C.y, TARGET_BLOCK_M * BM, TARGET_BLOCK_N * BN, BM, BN, colActive, 0.8 - (p_inner - 0.8)*4);
+                    }
+                }
+            }
+
+            // Sync Slider (Update without triggering events)
+            if (isPlaying) {
+                progressSlider.value = (time / TOTAL_DURATION) * 1000;
+            }
+
+            if (isPlaying) {
+                // Approximate 60fps delta time based on speed
+                animationTime += 16.66 * animationSpeed; 
+                requestAnimationFrame(draw);
+            }
+        }
+
+        // Interaction Logic
+        function togglePlay() {
+            isPlaying = !isPlaying;
+            if (isPlaying) {
+                iconPlay.classList.add('hidden');
+                iconPause.classList.remove('hidden');
+                requestAnimationFrame(draw);
+            } else {
+                iconPlay.classList.remove('hidden');
+                iconPause.classList.add('hidden');
+            }
+        }
+
+        playPauseBtn.addEventListener('click', togglePlay);
+
+        progressSlider.addEventListener('input', (e) => {
+            animationTime = (e.target.value / 1000) * TOTAL_DURATION;
+            if (!isPlaying) {
+                draw(); // Redraw immediately if paused
+            }
+        });
+
+        speedSelect.addEventListener('change', (e) => {
+            animationSpeed = parseFloat(e.target.value);
+        });
+
+        // Initialize
+        resize();
+        updateUIState(0, 0, 0);
+        requestAnimationFrame(draw);
+
+    </script>
+</body>
+</html>

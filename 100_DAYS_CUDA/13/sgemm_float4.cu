@@ -30,123 +30,114 @@ __global__ void sgemm_vectorized_kernel(
     float* __restrict__ C,
     int M, int N, int K) 
 {
-    // --- 线程物理坐标与 1D 展平 ID ---
-    const int tx = threadIdx.x; // 0 ~ 15
-    const int ty = threadIdx.y; // 0 ~ 15
-    const int tid = ty * blockDim.x + tx; // 0 ~ 255
+   int tx = threadIdx.x;
+   int ty = threadIdx.y;
+   int tid = ty * blockDim.x +tx;
 
-    // 当前 Block 在 C 矩阵中的绝对起始物理行/列
-    const int c_row_start = blockIdx.y * BM;
-    const int c_col_start = blockIdx.x * BN;
+   int c_start_row = blockIdx.y * BM;//原：blockdim.y
+   int c_start_col = blockIdx.x * BN;//原：blockdim.x
 
-    // --- 申请 Shared Memory (必须满足 16 字节物理对齐) ---
-    __shared__ float As[BM][BK]; // 128 x 8
-    __shared__ float Bs[BK][BN]; // 8 x 128
+   __shared__ float s_A[BM][BK];
+   __shared__ float s_B[BK][BN];
+   float seg_A[TM];
+   float seg_B[TN];
+   float accum[TM][TN] = {0.0f};
 
-    // 线程私有寄存器 (Register File)
-    float accum[TM][TN] = {0.0f};
-    float reg_a[TM];
-    float reg_b[TN];
+   int stride = (K + BK -1) / BK; // 此处由于a b 相同，所以只设置一个stride。
+   //int b_stride = (K + BN -1) / BN;
 
-    // ------------------------------------------------------------------------
-    // 【核心亮点】：计算 float4 向量化搬运逻辑
-    // ------------------------------------------------------------------------
-    // A 矩阵 (128x8): 每行 8 个 float = 2 个 float4。256 个线程对应 256 个 float4。
-    const int a_vec_idx = tid;                       // 0 ~ 255
-    const int a_tile_row = a_vec_idx / (BK / 4);     // BK/4 = 2, 结果 0 ~ 127 行
-    const int a_tile_col = (a_vec_idx % (BK / 4)) * 4; // (0 或 1) * 4 = 0 或 4 列
+    int a_tid_cur = tid;//这里是由于一个线程搬运一个float4,所以对应
+    int a_tile_row = a_tid_cur / (BK / 4);
+    int a_tile_col = (a_tid_cur % (BK / 4)) * 4;
 
-    // B 矩阵 (8x128): 每行 128 个 float = 32 个 float4。256 个线程对应 256 个 float4。
-    const int b_vec_idx = tid;                       // 0 ~ 255
-    const int b_tile_row = b_vec_idx / (BN / 4);     // BN/4 = 32, 结果 0 ~ 7 行
-    const int b_tile_col = (b_vec_idx % (BN / 4)) * 4; // (0~31) * 4 = 0, 4, 8 ... 124 列
+    int b_tid_cur = tid;//这里是由于一个线程搬运一个float4,所以对应
+    int b_tile_row = b_tid_cur / (BN / 4);
+    int b_tile_col = (b_tid_cur % (BN / 4)) * 4;
 
-    // --- 主循环：沿着 K 维度分步推进 ---
-    for (int ph = 0; ph < (K + BK - 1) / BK; ++ph) {
+   for (int j = 0; j < stride; ++j)
+   {
+        //填充S_A，利用float4
+        int a_global_row = c_start_row + a_tile_row;
+        int a_global_col = j * BK + a_tile_col;
+        float4 tmp_a = make_float4(0.0f,0.0f,0.0f,0.0f);
 
-        // ====================================================================
-        // 1. 128-bit 向量化加载：Global Memory (VRAM) -> Shared Memory (SRAM)
-        // 对应硬件汇编：发送一条 LDG.128 指令，一口气拉回 16 字节
-        // ====================================================================
-
-        // (A) 搬运 A 矩阵子块
-        int a_global_r = c_row_start + a_tile_row;
-        int a_global_c = ph * BK + a_tile_col;
-
-        float4 tmp_a = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-        // 边界安全校验：若处于边界外，安全回退到标量读取或置零
-        if (a_global_r < M && a_global_c + 3 < K) {
-            // 物理魔法：使用 reinterpret_cast 发起 128-bit 向量化读取
-            tmp_a = *reinterpret_cast<const float4*>(&A[a_global_r * K + a_global_c]);
-        } else {
-            for (int i = 0; i < 4; ++i) {
-                if (a_global_r < M && a_global_c + i < K) {
-                    reinterpret_cast<float*>(&tmp_a)[i] = A[a_global_r * K + a_global_c + i];
+        if (a_global_row <M && a_global_col+3 <N)//原：M，K
+        {
+            // s_A[a_tile_row][a_tile_col] = A[a_global_row * K + a_global_col];
+            tmp_a = *reinterpret_cast<const float4*>(&A[a_global_row * K + a_global_col]);
+        }
+        else
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                if (a_global_row<M && a_global_col + i < K)
+                {
+                    reinterpret_cast<float*>(&tmp_a)[i] = A[a_global_row * K + a_global_col+ i];
                 }
+                
+            }
+            
+        }
+        *reinterpret_cast<float4*>(&s_A[a_tile_row][a_tile_col]) = tmp_a;
+        
+        //填充S_B，利用float4
+        int b_global_row = j * BK + b_tile_row;
+        int b_global_col = c_start_col + b_tile_col;
+
+        float4 tmp_b = make_float4(0.0f,0.0f,0.0f,0.0f);
+        if (b_global_row <K && b_global_col+3 <N) //错了，原：M，K
+        {
+            tmp_b = *reinterpret_cast<const float4*>(&B[b_global_row * N + b_global_col]);
+        }
+        else
+        {
+            for (int i = 0; i < 4; ++i)
+            {
+                if (b_global_row<K && b_global_col + i < N)//错了，原：M，N
+                {
+                    reinterpret_cast<float*>(&tmp_b)[i] = B[b_global_row * N + b_global_col+ i];
+                }
+                
             }
         }
-        // 将 float4 写入 Shared Memory (一次写 16 字节)
-        *reinterpret_cast<float4*>(&As[a_tile_row][a_tile_col]) = tmp_a;
+        *reinterpret_cast<float4*>(&s_B[b_tile_row][b_tile_col]) = tmp_b;
 
-
-        // (B) 搬运 B 矩阵子块
-        int b_global_r = ph * BK + b_tile_row;
-        int b_global_c = c_col_start + b_tile_col;
-
-        float4 tmp_b = make_float4(0.0f, 0.0f, 0.0f, 0.0f);
-        if (b_global_r < K && b_global_c + 3 < N) {
-            tmp_b = *reinterpret_cast<const float4*>(&B[b_global_r * N + b_global_c]);
-        } else {
-            for (int i = 0; i < 4; ++i) {
-                if (b_global_r < K && b_global_c + i < N) {
-                    reinterpret_cast<float*>(&tmp_b)[i] = B[b_global_r * N + b_global_c + i];
-                }
-            }
-        }
-        // 将 float4 写入 Shared Memory
-        *reinterpret_cast<float4*>(&Bs[b_tile_row][b_tile_col]) = tmp_b;
-
-        // 强迫线程同步：等待 1024 个数据全部由 128-bit 指令写入 Shared Memory
         __syncthreads();
-
-        // ====================================================================
-        // 2. 计算阶段：Shared Memory -> Register -> 2D 外积累加
-        // ====================================================================
+        //开始利用寄存器计算
+            //从S_A中填入寄存器
         #pragma unroll
-        for (int k = 0; k < BK; ++k) {
+        for (int k = 0; k < BK; ++k) 
+        {
             #pragma unroll
             for (int i = 0; i < TM; ++i) {
-                reg_a[i] = As[ty * TM + i][k];
+                seg_A[i] = s_A[ty * TM + i][k];
             }
 
             #pragma unroll
             for (int j = 0; j < TN; ++j) {
-                reg_b[j] = Bs[k][tx * TN + j];
+                seg_B[j] = s_B[k][tx * TN + j];
             }
 
             #pragma unroll
             for (int i = 0; i < TM; ++i) {
                 #pragma unroll
                 for (int j = 0; j < TN; ++j) {
-                    accum[i][j] += reg_a[i] * reg_b[j];
+                    accum[i][j] += seg_A[i] * seg_B[j];
                 }
             }
         }
-
         __syncthreads();
     }
-
-    // ====================================================================
-    // 3. 写回阶段：Register -> Global Memory (128-bit 向量化写回)
-    // ====================================================================
+        //返回C矩阵中
     #pragma unroll
-    for (int i = 0; i < TM; ++i) {
-        int global_r = c_row_start + ty * TM + i;
+    for (int i = 0; i < TM; ++i) 
+    {
+        int global_r = c_start_row + ty * TM + i;
         if (global_r < M) {
             // 每行 TN=8 个 float，可以拆分为 2 个 float4 进行写回
             #pragma unroll
             for (int j = 0; j < TN; j += 4) {
-                int global_c = c_col_start + tx * TN + j;
+                int global_c = c_start_col + tx * TN + j;
                 if (global_c + 3 < N) {
                     float4 tmp_out;
                     tmp_out.x = accum[i][j + 0];
@@ -165,11 +156,9 @@ __global__ void sgemm_vectorized_kernel(
             }
         }
     }
+
 }
 
-// ============================================================================
-// CPU 端验证函数 (Ground Truth)
-// ============================================================================
 void cpu_sgemm(const float* A, const float* B, float* C, int M, int N, int K) {
     for (int i = 0; i < M; ++i) {
         for (int j = 0; j < N; ++j) {
