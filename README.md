@@ -22,7 +22,7 @@ AI Infra Learning Journal
 | 13 | 2026-08-05 | sgemm_2d_tile_float4 | sgemm_2d_tile_float4，之前sgemm_2d_tiling 的流程看似熟稔于心，于是我决定在宿舍断网，挑战仅凭逻辑推演手画架构图并独立敲出 sgemm_2d_tile_float4。然而，脱离了网络和提示后，过程远比想象中痛苦。甚至在gemini提醒下恍然大悟时，我才发现自己连最基础的矩阵边界条件都能写错。那一刻的无力感极其强烈：在 AI 能瞬间查出代码漏洞、随时生成完美实现的大模型时代，这种断网“硬刚”的苦练到底意义何在？我们真的还需要纯手写这种底层代码吗？看着眼前屡屡报错的代码，我的信心备受打击，甚至开始怀疑自己的能力——这个“100 Days CUDA”挑战，凭现在的我真的能走到最后吗？tips: This kernel grid is too small to fill the available resources on this device, resulting in only 0.5 full waves across all SMs. |
 | 14 | 2026-08-06 | bank_conflict | bank_conflict,今天我通过两种方式实现了bank_conflict冲突解决，说实话，我感觉不太到这个的作用，只是大概直到这样可以加速计算，但是我又如何能够看出是否出现了bank_conflict。也许ncu能给我答案。 |
 | 15 | 2026-08-08 | gemm_double_buffer | gemm_double_buffer 1、申请两套房 (开辟双份 Shared Memory)。 2、先填第一套 (Prologue 预取第一个 Tile)。 3、主循环错位执行 (你住第一套时，我打扫第二套；你住第二套时，我打扫第一套)。 4、绝对同步 (__syncthreads 是生命线，防止打扫的人把住着的人赶走)。 5、别忘了最后一套 (Epilogue 结算最后一笔账)。 |
-| 16 |  |  |  |
+| 16 | 2026-08-08 | gemm_warp_tile | gemm_warp_tile,相比于之前的sgemm_2d_tiling，这个主要集合了warp，之前的注重线程。 |
 | 17 |  |  |  |
 | 18 |  |  |  |
 | 19 |  |  |  |
