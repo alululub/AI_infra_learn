@@ -23,7 +23,7 @@ AI Infra Learning Journal
 | 14 | 2026-08-06 | bank_conflict | bank_conflict,今天我通过两种方式实现了bank_conflict冲突解决，说实话，我感觉不太到这个的作用，只是大概直到这样可以加速计算，但是我又如何能够看出是否出现了bank_conflict。也许ncu能给我答案。 |
 | 15 | 2026-08-08 | gemm_double_buffer | gemm_double_buffer 1、申请两套房 (开辟双份 Shared Memory)。 2、先填第一套 (Prologue 预取第一个 Tile)。 3、主循环错位执行 (你住第一套时，我打扫第二套；你住第二套时，我打扫第一套)。 4、绝对同步 (__syncthreads 是生命线，防止打扫的人把住着的人赶走)。 5、别忘了最后一套 (Epilogue 结算最后一笔账)。 |
 | 16 | 2026-08-09~11 | gemm_warp_tile | gemm_warp_tile,相比于之前的sgemm_2d_tiling，这个主要集合了warp，之前的注重线程。 |
-| 17 |  |  |  |
+| 17 | 2026-08-12 | sgemm_half2 | sgemm_half2的核心在于利用 32 位物理寄存器同时装入两个 FP16 数值，并调用 __hfma2 硬件指令在单周期内完成两笔乘加，实现计算吞吐与带宽利用率的物理翻倍。代码实现上，frag_C 采用 half2 降低一半寄存器消耗；矩阵 A 标量读取后广播克隆，矩阵 B 向量化一次拉取 32 位；配合共享内存广播机制与对齐约束，完美压榨出 GPU 标量计算的性能极限。 |
 | 18 |  |  |  |
 | 19 |  |  |  |
 | 20 |  |  |  |
