@@ -1,0 +1,19 @@
+{
+    "configurations": [
+        {
+            "name": "CUDA",
+            "includePath": [
+                "${workspaceFolder}/**",
+                "/usr/local/cuda-11.8/include"
+            ],
+            "defines": [
+                "__CUDACC__",
+                "__CUDA_ARCH__=750"
+            ],
+            "compilerPath": "/usr/local/cuda-11.8/bin/nvcc",
+            "cStandard": "c11",
+            "cppStandard": "c++17"
+        }
+    ],
+    "version": 4
+}
