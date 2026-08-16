@@ -135,3 +135,6 @@ int main() {
     CUDA_CHECK(cudaFree(d_C));
     return 0;
 }
+
+
+// nvcc -arch=sm_75 -O3 wmma_gemm.cu -o wmma_gemm
