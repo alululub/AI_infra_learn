@@ -24,7 +24,7 @@ AI Infra Learning Journal
 | 15 | 2026-08-08 | gemm_double_buffer | gemm_double_buffer 1、申请两套房 (开辟双份 Shared Memory)。 2、先填第一套 (Prologue 预取第一个 Tile)。 3、主循环错位执行 (你住第一套时，我打扫第二套；你住第二套时，我打扫第一套)。 4、绝对同步 (__syncthreads 是生命线，防止打扫的人把住着的人赶走)。 5、别忘了最后一套 (Epilogue 结算最后一笔账)。 |
 | 16 | 2026-08-09~11 | gemm_warp_tile | gemm_warp_tile,相比于之前的sgemm_2d_tiling，这个主要集合了warp，之前的注重线程。 |
 | 17 | 2026-08-12~13 | sgemm_half2 | sgemm_half2的核心在于利用 32 位物理寄存器同时装入两个 FP16 数值，并调用 __hfma2 硬件指令在单周期内完成两笔乘加，实现计算吞吐与带宽利用率的物理翻倍。代码实现上，frag_C 采用 half2 降低一半寄存器消耗；矩阵 A 标量读取后广播克隆，矩阵 B 向量化一次拉取 32 位；配合共享内存广播机制与对齐约束，完美压榨出 GPU 标量计算的性能极限。 |
-| 18 | 2026-08-15~16 | wmma_gemm | gemm_warp_tile（线程逻辑级）： 纯手动映射空间坐标，依靠软件层面的双重循环，让 Warp 内的 32 个线程像拼图一样各司其职，拼出目标矩阵块。sgemm_half2（指令与寄存器级）： 物理空间的极限利用。用通用 32-bit 寄存器打包双 FP16，在代码里显式手写外积展开循环，依靠 __hfma2 榨干传统的标量 ALU 吞吐。wmma_gemm（硬件与硅片级）： 维度重构！彻底废弃手动乘加，用 fragment 容器以 Warp 为整体搬运数据。load_matrix_sync 一次吞下 256 个元素组成的 $16 \times 16$ 矩阵块，由 mma_sync 将你曾经需要手写的“外积逻辑”，直接丢给 Tensor Core 内部庞大的 MAC 物理电路瞬间轰出。 |
+| 18 | 2026-08-15~17 | wmma_gemm | gemm_warp_tile（线程逻辑级）： 纯手动映射空间坐标，依靠软件层面的双重循环，让 Warp 内的 32 个线程像拼图一样各司其职，拼出目标矩阵块。sgemm_half2（指令与寄存器级）： 物理空间的极限利用。用通用 32-bit 寄存器打包双 FP16，在代码里显式手写外积展开循环，依靠 __hfma2 榨干传统的标量 ALU 吞吐。wmma_gemm（硬件与硅片级）： 维度重构！彻底废弃手动乘加，用 fragment 容器以 Warp 为整体搬运数据。load_matrix_sync 一次吞下 256 个元素组成的 $16 \times 16$ 矩阵块，由 mma_sync 将你曾经需要手写的“外积逻辑”，直接丢给 Tensor Core 内部庞大的 MAC 物理电路瞬间轰出。 |
 | 19 |  |  |  |
 | 20 |  |  |  |
 | 21 |  |  |  |
