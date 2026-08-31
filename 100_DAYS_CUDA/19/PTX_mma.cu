@@ -145,4 +145,4 @@ int main() {
     return 0;
 }
 
-//nvcc -O3 -arch=sm_86 PTX_mma.cu -o PTX_mma
+//编译需要指定GPU构架型号     nvcc -O3 -arch=sm_86 PTX_mma.cu -o PTX_mma
