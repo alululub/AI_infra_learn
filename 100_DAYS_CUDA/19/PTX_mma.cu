@@ -23,6 +23,9 @@ __device__ __forceinline__ void mma_m16n8k16(
     const unsigned int b[2], 
     const float c[4]) 
 {
+    // 它跳过了所有上层库的封装开销，直接让 NVCC 将 C++ 变量 a, b, c 绑定到物理寄存器上，
+    // 发射了一条直接命令 GPU 硅片中 Tensor Core 电路开始运转的脉动阵列指令，并把计算结果原原本本地保留在私有寄存器 d[0]~d[3] 中，
+    // 为后续零显存开销的算子融合（如直接加 Bias、做 ReLU、算 Softmax）创造了条件。
     asm volatile(
         "mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32 "
         "{%0, %1, %2, %3}, "      // 输出 D: 4 个 32-bit float 寄存器
