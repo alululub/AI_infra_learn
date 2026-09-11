@@ -218,3 +218,5 @@ int main() {
 
     return 0;
 }
+
+//nvcc -O3 -arch=sm_86 benchmark_comparison.cu -o benchmark_comparison
