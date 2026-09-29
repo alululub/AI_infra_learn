@@ -29,7 +29,7 @@ constexpr int THREADS_Y = BM / TM; // 16
 // 其中: A 是 M x K, B 是 K x N, C 是 M x N
 // Bias 是 1 x N 的行向量 (在 N 维度做广播操作)
 // =====================================================================
-__global__ void __launch_bounds__(THREADS_X * THREADS_Y)
+__global__ void __launch_bounds__(THREADS_X * THREADS_Y)//指导编译器分配物理寄存器。
 fused_gemm_bias_relu_kernel(
     const float* __restrict__ A,
     const float* __restrict__ B,
