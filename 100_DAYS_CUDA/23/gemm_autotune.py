@@ -104,7 +104,7 @@ gemm_autotune_kernel(
 """
 
 # =====================================================================
-# 2. 搜索空间与硬件剪枝
+# 2. 搜索空间与硬件剪枝，用于生成所有可能的配置组合
 # =====================================================================
 def get_search_space():
     space = {
@@ -147,7 +147,7 @@ def is_valid_config(cfg, max_smem_bytes=48 * 1024, max_threads_per_block=1024):
 def benchmark_config(cfg, d_A, d_B, d_C, M, N, K, warmup=3, iters=10):
     BM, BN, BK, TM, TN = cfg["BM"], cfg["BN"], cfg["BK"], cfg["TM"], cfg["TN"]
     
-    # 采用安全文本替换，规避 format 针对大括号的解析错误
+    # 采用安全文本替换，规避 format 针对大括号的解析错误，用于传入参数模板
     code = GEMM_TEMPLATE
     code = code.replace("__BM__", str(BM))
     code = code.replace("__BN__", str(BN))
