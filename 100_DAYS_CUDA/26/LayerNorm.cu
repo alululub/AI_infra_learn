@@ -27,7 +27,6 @@ __global__ void layerNormKernel(
     int row = blockIdx.x;
     int tid = threadIdx.x;
 
-    // 同一个 Block 的所有线程一起退出，避免同步问题。
     if (row >= M) {
         return;
     }
