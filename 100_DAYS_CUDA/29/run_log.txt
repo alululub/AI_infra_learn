@@ -1,0 +1,65 @@
+M=2, N=4
+  split (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=6.53e-08
+  fused (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=6.53e-08
+  split: 3.77 us, 0.03 GB/s effective
+  fused: 2.16 us, 0.06 GB/s effective, speedup 1.74x
+
+M=4, N=1
+  split (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=6.29e-08
+  fused (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=6.29e-08
+  split: 3.98 us, 0.02 GB/s effective
+  fused: 2.25 us, 0.03 GB/s effective, speedup 1.77x
+
+M=512, N=100
+  split (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=5.42e-07
+  fused (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=5.42e-07
+  split: 6.65 us, 123.17 GB/s effective
+  fused: 4.34 us, 188.74 GB/s effective, speedup 1.53x
+
+M=5, N=1
+  split (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=7.63e-08
+  fused (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=7.63e-08
+  split: 3.93 us, 0.02 GB/s effective
+  fused: 2.25 us, 0.03 GB/s effective, speedup 1.75x
+
+M=512, N=1001
+  split (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=1.05e-06
+  fused (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=1.05e-06
+  split: 36.57 us, 224.22 GB/s effective
+  fused: 29.43 us, 278.68 GB/s effective, speedup 1.24x
+
+M=1024, N=1024
+  split (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.59e-07
+  fused (vec4<1>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.59e-07
+  split: 84.36 us, 198.87 GB/s effective
+  fused: 60.03 us, 279.47 GB/s effective, speedup 1.41x
+
+M=1024, N=2048
+  split (vec4<2>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.90e-07
+  fused (vec4<2>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.90e-07
+  split: 160.76 us, 208.73 GB/s effective
+  fused: 121.53 us, 276.09 GB/s effective, speedup 1.32x
+
+M=1024, N=4096
+  split (vec4<4>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=9.67e-07
+  fused (vec4<4>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=9.67e-07
+  split: 309.02 us, 217.17 GB/s effective
+  fused: 249.94 us, 268.50 GB/s effective, speedup 1.24x
+
+M=1024, N=5120
+  split (vec4<8>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.67e-07
+  fused (vec4<8>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=8.67e-07
+  split: 394.65 us, 212.56 GB/s effective
+  fused: 310.10 us, 270.51 GB/s effective, speedup 1.27x
+
+M=4096, N=4096
+  split (vec4<4>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=9.44e-07
+  fused (vec4<4>) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=9.44e-07
+  split: 1220.25 us, 219.98 GB/s effective
+  fused: 970.20 us, 276.68 GB/s effective, speedup 1.26x
+
+M=32, N=8196
+  split (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=5.93e-07
+  fused (scalar) PASS  max |h-h_ref|=0.00e+00  max |y-y_ref|=5.93e-07
+  split: 18.42 us, 227.79 GB/s effective
+  fused: 21.30 us, 196.97 GB/s effective, speedup 0.86x
